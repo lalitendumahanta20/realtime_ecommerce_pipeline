@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+=======
+# realtime_ecommerce_pipeline
+>>>>>>> 896e3769b37c4972dd10a5df1aa62ba08427c6e5
 # Real-Time E-Commerce Event Processing Pipeline
 
 ## Project Overview
@@ -209,4 +213,8 @@ The automated test suite covers:
 
 ## Author
 
+<<<<<<< HEAD
 Developed as a hands-on data engineering project to demonstrate real-time event processing, data quality, reliability, and SQL-based analytics.
+=======
+Developed as a hands-on data engineering project to demonstrate real-time event processing, data quality, reliability, and SQL-based analytics.
+>>>>>>> 896e3769b37c4972dd10a5df1aa62ba08427c6e5
