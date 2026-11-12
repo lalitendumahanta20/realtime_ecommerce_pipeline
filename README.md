@@ -92,7 +92,7 @@ The pipeline uses the following SQL Server tables:
 ### 1. Clone the repository
 
 ```bash
-git clone YOUR_GITHUB_REPOSITORY_URL
+git clone https://github.com/lalitendumahanta20/realtime_ecommerce_pipeline
 cd realtime_ecommerce_pipeline
 ```
 
