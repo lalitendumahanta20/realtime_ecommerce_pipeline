@@ -1,9 +1,11 @@
+
+import os
 import time
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 
-from db_connection import get_connection
+from src.db_connection import get_connection
 
 
 BATCH_SIZE = 10
@@ -12,14 +14,13 @@ ALLOWED_LATENESS_MINUTES = 5
 
 
 def run_batch_transaction(conn, operation):
-    """
-    Execute a batch operation.
-
-    Commit when successful.
-    Roll back when any operation fails.
-    """
     try:
         result = operation()
+
+        # Simulate a crash immediately before commit.
+        if os.getenv("SIMULATE_BATCH_FAILURE") == "1":
+            raise RuntimeError("SIMULATED_FAILURE_BEFORE_COMMIT")
+
         conn.commit()
         return result
 
@@ -330,65 +331,116 @@ def advance_checkpoint(cursor, new_offset):
     )
 
 
+def claim_new_events(cursor, rows):
+    """
+    Register events in the processing ledger.
+    Return only events that have not been processed before.
+    """
+
+    new_rows = []
+
+    for row in rows:
+        cursor.execute(
+            """
+            SET NOCOUNT ON;
+
+            DECLARE @inserted TABLE (
+                event_id VARCHAR(100) NOT NULL
+            );
+
+            INSERT INTO dbo.processed_events (
+                event_id,
+                source_offset
+            )
+            OUTPUT inserted.event_id
+            INTO @inserted(event_id)
+            SELECT ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM dbo.processed_events WITH (UPDLOCK, HOLDLOCK)
+                WHERE event_id = ?
+            );
+
+            SELECT COUNT(*) AS inserted_count
+            FROM @inserted;
+            """,
+            row.event_id,
+            row.source_offset,
+            row.event_id
+        )
+
+        result = cursor.fetchone()
+
+        if result and result[0] == 1:
+            new_rows.append(row)
+
+    return new_rows
+
+
 def process_one_batch(cursor, rows):
     """
-    Process one batch.
-
-    All database changes made by this function are committed
-    or rolled back together by run_batch_transaction().
+    Process a batch with event-level idempotency.
     """
 
-    # STEP 1: Calculate watermark.
-    watermark_row = get_watermark_details(cursor)
+    # STEP 1: Claim only previously unprocessed events.
+    new_rows = claim_new_events(cursor, rows)
 
-    batch_max_event_time = max(
-        row.event_time for row in rows
-    )
-
-    if watermark_row:
-        old_max_event_time = watermark_row.max_event_time
-        allowed_lateness = (
-            watermark_row.allowed_lateness_minutes
-        )
-    else:
-        old_max_event_time = None
-        allowed_lateness = ALLOWED_LATENESS_MINUTES
-
-    max_event_time, watermark_time = calculate_watermark(
-        old_max_event_time,
-        batch_max_event_time,
-        allowed_lateness
-    )
-
-    save_watermark(
-        cursor,
-        max_event_time,
-        watermark_time,
-        allowed_lateness
-    )
-
-    # STEP 2: Classify late events.
-    batch_late = update_event_lateness(
-        cursor,
-        rows,
-        watermark_time
-    )
-
-    # STEP 3: Aggregate events.
-    aggregates = aggregate_events(rows)
-
-    # STEP 4: Save minute aggregates.
-    save_aggregates(cursor, aggregates)
-
-    # STEP 5: Advance checkpoint.
+    # Always advance checkpoint across fetched rows.
     new_offset = max(
         row.source_offset for row in rows
     )
 
+    batch_late = 0
+
+    # STEP 2: Process only newly claimed events.
+    if new_rows:
+
+        # Calculate watermark.
+        watermark_row = get_watermark_details(cursor)
+
+        batch_max_event_time = max(
+            row.event_time for row in new_rows
+        )
+
+        if watermark_row:
+            old_max_event_time = watermark_row.max_event_time
+            allowed_lateness = (
+                watermark_row.allowed_lateness_minutes
+            )
+        else:
+            old_max_event_time = None
+            allowed_lateness = ALLOWED_LATENESS_MINUTES
+
+        max_event_time, watermark_time = calculate_watermark(
+            old_max_event_time,
+            batch_max_event_time,
+            allowed_lateness
+        )
+
+        save_watermark(
+            cursor,
+            max_event_time,
+            watermark_time,
+            allowed_lateness
+        )
+
+        # STEP 3: Classify newly claimed events.
+        batch_late = update_event_lateness(
+            cursor,
+            new_rows,
+            watermark_time
+        )
+
+        # STEP 4: Aggregate only newly claimed events.
+        aggregates = aggregate_events(new_rows)
+
+        save_aggregates(cursor, aggregates)
+
+    # STEP 5: Advance checkpoint.
+    # This also handles batches containing only duplicates.
     advance_checkpoint(cursor, new_offset)
 
-    return new_offset, batch_late
-
+    return new_offset, batch_late, len(new_rows)
 
 
 def process_batches():
@@ -400,6 +452,7 @@ def process_batches():
 
     total_processed = 0
     total_late = 0
+    total_duplicates_skipped = 0
     batch_number = 0
 
     try:
@@ -442,17 +495,22 @@ def process_batches():
             batch_number += 1
 
             # Execute the complete batch inside one transaction.
-            new_offset, batch_late = run_batch_transaction(
+            new_offset, batch_late, newly_processed = run_batch_transaction(
                 conn,
                 lambda: process_one_batch(cursor, rows)
             )
 
-            total_processed += len(rows)
+            duplicates_skipped = len(rows) - newly_processed
+
+            total_processed += newly_processed
             total_late += batch_late
+            total_duplicates_skipped += duplicates_skipped
 
             print(
                 f"Batch {batch_number}: "
-                f"{len(rows)} events processed | "
+                f"{len(rows)} events fetched | "
+                f"{newly_processed} new events processed | "
+                f"{duplicates_skipped} duplicates skipped | "
                 f"Late events: {batch_late} | "
                 f"Checkpoint: {new_offset}"
             )
@@ -490,6 +548,7 @@ def process_batches():
         metrics = {
             "batches_processed": batch_number,
             "events_processed": total_processed,
+            "duplicates_skipped": total_duplicates_skipped,
             "late_events_detected": total_late,
             "final_checkpoint": final_offset,
             "final_watermark": final_watermark,
@@ -503,6 +562,7 @@ def process_batches():
         print("\n========== PROCESSING SUMMARY ==========")
         print(f"Total batches processed: {batch_number}")
         print(f"Total events processed: {total_processed}")
+        print(f"Total duplicates skipped: {total_duplicates_skipped}")
         print(f"Late events detected: {total_late}")
         print(f"Final checkpoint: {final_offset}")
         print(f"Final watermark: {final_watermark}")
@@ -528,13 +588,6 @@ def process_batches():
         cursor.close()
         conn.close()
 
+
 if __name__ == "__main__":
     process_batches()
-
-
-
-
-
-
-
-

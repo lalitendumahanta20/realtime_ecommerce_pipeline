@@ -4,6 +4,7 @@ import time
 import logging
 from pathlib import Path
 
+
 # =====================================================
 # PROJECT PATH CONFIGURATION
 # =====================================================
@@ -11,7 +12,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_DIR / "src"
 
-# Add src folder before importing project modules
+# Add src folder before importing project modules.
 sys.path.insert(0, str(SRC_DIR))
 
 
@@ -33,6 +34,8 @@ from run_history import (
 # =====================================================
 # LOGGING CONFIGURATION
 # =====================================================
+
+(PROJECT_DIR / "logs").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,7 +81,7 @@ def run_pipeline():
     pipeline_start = time.perf_counter()
     run_id = None
 
-    # Default metrics in case a stage fails.
+    # Default ingestion metrics.
     load_stats = {
         "records_read": 0,
         "records_inserted": 0,
@@ -117,7 +120,7 @@ def run_pipeline():
         )
 
         logging.info(
-            "Duplicates skipped: %s",
+            "Ingestion duplicates skipped: %s",
             load_stats["duplicates_skipped"]
         )
 
@@ -148,12 +151,27 @@ def run_pipeline():
         )
 
         logging.info(
+            "Processing duplicates skipped: %s",
+            processing_stats["duplicates_skipped"]
+        )
+
+        logging.info(
             "Late events detected: %s",
             processing_stats["late_events_detected"]
         )
 
         logging.info(
-            "Processing throughput: %s events/second",
+            "Final checkpoint: %s",
+            processing_stats["final_checkpoint"]
+        )
+
+        logging.info(
+            "Final watermark: %s",
+            processing_stats["final_watermark"]
+        )
+
+        logging.info(
+            "Processing throughput: %.2f events/second",
             processing_stats["events_per_second"]
         )
 
@@ -170,6 +188,12 @@ def run_pipeline():
             raise RuntimeError("Data reconciliation failed")
 
         # -------------------------------------------------
+        # CALCULATE TOTAL EXECUTION TIME
+        # -------------------------------------------------
+
+        total_time = time.perf_counter() - pipeline_start
+
+        # -------------------------------------------------
         # UPDATE PIPELINE RUN HISTORY
         # -------------------------------------------------
 
@@ -177,14 +201,27 @@ def run_pipeline():
             run_id,
             load_stats["records_read"],
             load_stats["records_inserted"],
-            load_stats["records_rejected"]
+            load_stats["records_rejected"],
+
+            batches_processed=processing_stats["batches_processed"],
+            processing_events=processing_stats["events_processed"],
+            duplicates_skipped=processing_stats["duplicates_skipped"],
+            late_events_detected=processing_stats["late_events_detected"],
+            final_checkpoint=processing_stats["final_checkpoint"],
+            final_watermark=processing_stats["final_watermark"],
+            processing_duration_seconds=processing_stats[
+                "processing_duration_seconds"
+            ],
+            events_per_second=processing_stats["events_per_second"],
+
+            ingestion_duration_seconds=load_time,
+            reconciliation_duration_seconds=reconciliation_time,
+            total_duration_seconds=total_time
         )
 
         # -------------------------------------------------
         # FINAL PERFORMANCE SUMMARY
         # -------------------------------------------------
-
-        total_time = time.perf_counter() - pipeline_start
 
         logging.info("========== PERFORMANCE SUMMARY ==========")
 
@@ -211,6 +248,7 @@ def run_pipeline():
         logging.info("Pipeline run ID: %s", run_id)
         logging.info("Pipeline status: SUCCESS")
 
+        logging.info("Pipeline metrics saved to SQL Server")
         logging.info("==========================================")
 
     except Exception as error:

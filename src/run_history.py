@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from db_connection import get_connection
+from src.db_connection import get_connection
 
 
 def start_pipeline_run():
@@ -37,7 +37,6 @@ def start_pipeline_run():
         )
 
         conn.commit()
-
         return run_id
 
     except Exception:
@@ -53,7 +52,18 @@ def complete_pipeline_run(
     run_id,
     records_read,
     records_inserted,
-    records_rejected
+    records_rejected,
+    batches_processed=0,
+    processing_events=0,
+    duplicates_skipped=0,
+    late_events_detected=0,
+    final_checkpoint=0,
+    final_watermark=None,
+    processing_duration_seconds=0,
+    events_per_second=0,
+    ingestion_duration_seconds=0,
+    reconciliation_duration_seconds=0,
+    total_duration_seconds=0
 ):
 
     conn = get_connection()
@@ -69,6 +79,17 @@ def complete_pipeline_run(
                 records_read = ?,
                 records_inserted = ?,
                 records_rejected = ?,
+                batches_processed = ?,
+                processing_events = ?,
+                duplicates_skipped = ?,
+                late_events_detected = ?,
+                final_checkpoint = ?,
+                final_watermark = ?,
+                processing_duration_seconds = ?,
+                events_per_second = ?,
+                ingestion_duration_seconds = ?,
+                reconciliation_duration_seconds = ?,
+                total_duration_seconds = ?,
                 error_message = NULL
             WHERE run_id = ?
             """,
@@ -77,8 +98,24 @@ def complete_pipeline_run(
             records_read,
             records_inserted,
             records_rejected,
+            batches_processed,
+            processing_events,
+            duplicates_skipped,
+            late_events_detected,
+            final_checkpoint,
+            final_watermark,
+            processing_duration_seconds,
+            events_per_second,
+            ingestion_duration_seconds,
+            reconciliation_duration_seconds,
+            total_duration_seconds,
             run_id
         )
+
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                f"Pipeline run not found: {run_id}"
+            )
 
         conn.commit()
 
@@ -89,6 +126,7 @@ def complete_pipeline_run(
     finally:
         cursor.close()
         conn.close()
+
 
 
 def fail_pipeline_run(run_id, error_message):
@@ -112,6 +150,11 @@ def fail_pipeline_run(run_id, error_message):
             run_id
         )
 
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                f"Pipeline run not found: {run_id}"
+            )
+
         conn.commit()
 
     except Exception:
@@ -121,4 +164,3 @@ def fail_pipeline_run(run_id, error_message):
     finally:
         cursor.close()
         conn.close()
-

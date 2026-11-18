@@ -1,51 +1,47 @@
+"""SQL Server connection factory configured through environment variables."""
+import sys
+from pathlib import Path
 
-import pyodbc
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import (DB_SERVER, DB_NAME, DB_USERNAME, DB_PASSWORD,
+                    DB_DRIVER, DB_TRUSTED_CONNECTION)
+
 
 def get_connection():
-    # Detect an installed SQL Server ODBC driver
-    available_drivers = pyodbc.drivers()
-
-    preferred_drivers = [
-        "ODBC Driver 18 for SQL Server",
-        "ODBC Driver 17 for SQL Server"
-    ]
-
-    driver = next(
-        (d for d in preferred_drivers if d in available_drivers),
-        None
-    )
-
-    if driver is None:
+    try:
+        import pyodbc
+    except ImportError as exc:
         raise RuntimeError(
-            "SQL Server ODBC Driver 17 or 18 not found. "
-            f"Available drivers: {available_drivers}"
+            "pyodbc is not installed. Run: pip install -r requirements.txt"
+        ) from exc
+    available = pyodbc.drivers()
+    driver = DB_DRIVER or next(
+        (name for name in ('ODBC Driver 18 for SQL Server', 'ODBC Driver 17 for SQL Server')
+         if name in available), None
+    )
+    if not driver or driver not in available:
+        raise RuntimeError(
+            'SQL Server ODBC Driver 17/18 not found. '
+            f'Available drivers: {available}. Set DB_DRIVER in .env.'
         )
 
-    connection_string = (
-        f"DRIVER={{{driver}}};"
-        "SERVER=localhost;"
-        "DATABASE=RealtimeEcommerceDB;"
-        "Trusted_Connection=yes;"
-        "TrustServerCertificate=yes;"
-    )
+    parts = [f'DRIVER={{{driver}}}', f'SERVER={DB_SERVER}', f'DATABASE={DB_NAME}',
+             'TrustServerCertificate=yes']
+    if DB_TRUSTED_CONNECTION:
+        parts.append('Trusted_Connection=yes')
+    else:
+        if not DB_USERNAME or not DB_PASSWORD:
+            raise RuntimeError('Set DB_USERNAME and DB_PASSWORD for SQL authentication.')
+        parts.extend([f'UID={DB_USERNAME}', f'PWD={DB_PASSWORD}'])
+    return pyodbc.connect(';'.join(parts) + ';', timeout=10)
 
-    connection = pyodbc.connect(connection_string, timeout=10)
-    return connection
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
+    connection = get_connection()
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT DB_NAME()")
-        database_name = cursor.fetchone()[0]
-
-        print("SQL Server connection successful!")
-        print("Connected database:", database_name)
-
-        cursor.close()
-        conn.close()
-
-    except Exception as error:
-        print("Database connection failed:", error)
+        print('SQL Server connection successful:', connection.cursor().execute('SELECT DB_NAME()').fetchone()[0])
+    finally:
+        connection.close()

@@ -24,6 +24,20 @@ class FakeConnection:
         self.rolled_back = True
 
 
+class FakeCursor:
+
+    def __init__(self):
+        self.executed_queries = []
+
+    def execute(self, query, *params):
+        self.executed_queries.append((query, params))
+        return self
+
+    def fetchone(self):
+        # Simulate one newly claimed event.
+        return (1,)
+
+
 def test_successful_transaction_commits():
 
     conn = FakeConnection()
@@ -73,6 +87,7 @@ def test_batch_failure_rolls_back_and_does_not_advance_checkpoint(
 ):
 
     conn = FakeConnection()
+    cursor = FakeCursor()
 
     # Create a sample event.
     rows = [
@@ -130,12 +145,15 @@ def test_batch_failure_rolls_back_and_does_not_advance_checkpoint(
     ):
         run_batch_transaction(
             conn,
-            lambda: process_one_batch(object(), rows)
+            lambda: process_one_batch(cursor, rows)
         )
 
     # Verify failure recovery.
     assert conn.committed is False
     assert conn.rolled_back is True
+
+    # Verify that the event was claimed using the fake cursor.
+    assert len(cursor.executed_queries) == 1
 
     # Checkpoint must not advance after the failed aggregate operation.
     assert checkpoint_calls == []
@@ -167,4 +185,3 @@ def test_failed_batch_can_be_retried_successfully():
     assert result == "SUCCESS"
     assert attempts["count"] == 2
     assert conn.committed is True
-

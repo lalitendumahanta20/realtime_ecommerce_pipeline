@@ -54,6 +54,21 @@ create table minute_aggregates (
         PRIMARY KEY (window_start, event_type)
 );
 
+CREATE TABLE dbo.processed_events (
+    event_id VARCHAR(100) NOT NULL,
+    source_offset BIGINT NOT NULL,
+    processed_at DATETIME2 NOT NULL
+        CONSTRAINT DF_processed_events_processed_at
+        DEFAULT SYSUTCDATETIME(),
+
+    CONSTRAINT PK_processed_events
+        PRIMARY KEY (event_id),
+
+    CONSTRAINT UQ_processed_events_source_offset
+        UNIQUE (source_offset)
+);
+GO
+
 select TABLE_NAME
 from INFORMATION_SCHEMA.TABLES
 where TABLE_TYPE = 'BASE TABLE';
@@ -493,3 +508,472 @@ ORDER BY started_at DESC;
 
 SELECT COUNT(*) AS total_events
 FROM dbo.events;
+
+
+SELECT
+    COUNT(*) AS TotalEvents,
+    MIN(source_offset) AS FirstOffset,
+    MAX(source_offset) AS LastOffset,
+    COUNT(DISTINCT source_offset) AS UniqueOffsets
+FROM dbo.events;
+
+SELECT *
+FROM dbo.pipeline_checkpoints
+WHERE source_name = 'ecommerce_events';
+
+SELECT
+    event_type,
+    COUNT(*) AS SourceCount,
+    SUM(COALESCE(amount, 0)) AS SourceAmount
+FROM dbo.events
+GROUP BY event_type;
+
+SELECT
+    event_type,
+    SUM(event_count) AS AggregatedCount,
+    SUM(total_amount) AS AggregatedAmount
+FROM dbo.minute_aggregates
+GROUP BY event_type;
+
+WITH SourceData AS (
+    SELECT
+        DATEADD(
+            MINUTE,
+            DATEDIFF(MINUTE, 0, event_time),
+            0
+        ) AS window_start,
+        event_type,
+        COUNT(*) AS source_count,
+        SUM(COALESCE(amount, 0)) AS source_amount
+    FROM dbo.events
+    GROUP BY
+        DATEADD(
+            MINUTE,
+            DATEDIFF(MINUTE, 0, event_time),
+            0
+        ),
+        event_type
+)
+SELECT
+    s.window_start,
+    s.event_type,
+    s.source_count,
+    COALESCE(a.event_count, 0) AS aggregate_count,
+    s.source_amount,
+    COALESCE(a.total_amount, 0) AS aggregate_amount
+FROM SourceData s
+LEFT JOIN dbo.minute_aggregates a
+    ON s.window_start = a.window_start
+    AND s.event_type = a.event_type
+WHERE
+    s.source_count <> COALESCE(a.event_count, 0)
+    OR s.source_amount <> COALESCE(a.total_amount, 0)
+ORDER BY s.window_start;
+
+SELECT
+    event_type,
+    SUM(event_count) AS TotalEvents,
+    SUM(total_amount) AS TotalAmount
+FROM dbo.minute_aggregates
+GROUP BY event_type
+ORDER BY event_type;
+
+
+USE RealtimeEcommerceDB;
+GO
+
+INSERT INTO dbo.processed_events (
+    event_id,
+    source_offset
+)
+SELECT
+    e.event_id,
+    e.source_offset
+FROM dbo.events e
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM dbo.processed_events p
+    WHERE p.event_id = e.event_id
+);
+GO
+
+SELECT
+    COUNT(*) AS TotalProcessedEvents,
+    COUNT(DISTINCT event_id) AS UniqueEventIDs,
+    COUNT(DISTINCT source_offset) AS UniqueOffsets
+FROM dbo.processed_events;
+
+SELECT
+    (SELECT COUNT(*) FROM dbo.events) AS TotalEvents,
+    (SELECT COUNT(*) FROM dbo.processed_events) AS ProcessedEvents,
+    (SELECT COUNT(*) FROM dbo.minute_aggregates) AS AggregateGroups;
+GO
+
+SELECT * FROM pipeline_checkpoints;
+GO
+
+SELECT
+    SUM(event_count) AS TotalAggregatedEvents,
+    SUM(total_amount) AS TotalAggregatedAmount,
+    COUNT(*) AS AggregateGroups
+FROM dbo.minute_aggregates;
+
+
+SELECT
+    COLUMN_NAME,
+    DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = 'pipeline_checkpoints';
+GO
+
+UPDATE dbo.pipeline_checkpoints
+SET
+    last_offset = 0,
+    updated_at = SYSUTCDATETIME()
+WHERE source_name = 'ecommerce_events';
+GO
+
+SELECT *
+FROM dbo.pipeline_checkpoints;
+
+SELECT
+    (SELECT COUNT(*) FROM dbo.events) AS TotalEvents,
+    (SELECT COUNT(*) FROM dbo.processed_events) AS ProcessedEvents,
+    (SELECT COUNT(*) FROM dbo.minute_aggregates) AS AggregateGroups;
+GO
+
+SELECT
+    SUM(event_count) AS TotalAggregatedEvents,
+    SUM(total_amount) AS TotalAggregatedAmount,
+    COUNT(*) AS AggregateGroups
+FROM minute_aggregates;
+GO
+
+SELECT *
+FROM pipeline_checkpoints;
+
+EXEC sp_help 'dbo.events';
+
+SELECT
+    MAX(source_offset) AS LatestOffset,
+    COUNT(*) AS TotalEvents
+FROM dbo.events;
+
+INSERT INTO dbo.events (
+    event_id,
+    event_type,
+    order_id,
+    customer_id,
+    amount,
+    event_time,
+    ingestion_time,
+    source_offset,
+    batch_id,
+    is_late
+)
+VALUES (
+    'TEST_EXACTLY_ONCE_001',
+    'order_created',
+    'TEST_ORDER_001',
+    'TEST_CUSTOMER_001',
+    500.00,
+    SYSUTCDATETIME(),
+    SYSUTCDATETIME(),
+    1104,
+    'EXACTLY_ONCE_TEST',
+    0
+);
+
+SELECT *
+FROM dbo.events
+WHERE event_id = 'TEST_EXACTLY_ONCE_001';
+
+
+SELECT *
+FROM dbo.processed_events
+WHERE event_id = 'TEST_EXACTLY_ONCE_001';
+GO
+
+SELECT *
+FROM dbo.processed_events
+WHERE event_id = 'TEST_EXACTLY_ONCE_001';
+
+SELECT *
+FROM dbo.pipeline_checkpoints
+WHERE source_name = 'ecommerce_events';
+
+SELECT
+    SUM(event_count) AS TotalAggregatedEvents,
+    SUM(total_amount) AS TotalAggregatedAmount,
+    COUNT(*) AS AggregateGroups
+FROM dbo.minute_aggregates;
+GO
+
+SELECT *
+FROM dbo.processed_events
+WHERE event_id = 'TEST_EXACTLY_ONCE_001';
+
+SELECT
+    SUM(event_count) AS TotalAggregatedEvents,
+    SUM(total_amount) AS TotalAggregatedAmount,
+    COUNT(*) AS AggregateGroups
+FROM dbo.minute_aggregates;
+
+SELECT *
+FROM dbo.pipeline_checkpoints
+WHERE source_name = 'ecommerce_events';
+
+SELECT
+    SUM(event_count) AS TotalAggregatedEvents,
+    SUM(total_amount) AS TotalAggregatedAmount,
+    COUNT(*) AS AggregateGroups
+FROM dbo.minute_aggregates;
+
+SELECT
+    (SELECT COUNT(*) FROM dbo.events) AS TotalEvents,
+    (SELECT COUNT(*) FROM dbo.processed_events) AS ProcessedEvents,
+    (SELECT COUNT(*) FROM dbo.minute_aggregates) AS AggregateGroups;
+
+SELECT
+    SUM(event_count) AS TotalAggregatedEvents,
+    SUM(total_amount) AS TotalAggregatedAmount
+FROM dbo.minute_aggregates;
+
+SELECT *
+FROM dbo.pipeline_checkpoints
+WHERE source_name = 'ecommerce_events';
+GO
+
+
+INSERT INTO dbo.events (
+    event_id,
+    event_type,
+    order_id,
+    customer_id,
+    amount,
+    event_time,
+    ingestion_time,
+    source_offset,
+    batch_id,
+    is_late
+)
+VALUES (
+    'TEST_CRASH_RECOVERY_001',
+    'order_created',
+    'TEST_CRASH_ORDER_001',
+    'TEST_CRASH_CUSTOMER_001',
+    750.00,
+    SYSUTCDATETIME(),
+    SYSUTCDATETIME(),
+    1105,
+    'CRASH_RECOVERY_TEST',
+    0
+);
+GO
+
+SELECT *
+FROM dbo.events
+WHERE event_id = 'TEST_CRASH_RECOVERY_001';
+
+SELECT *
+FROM dbo.processed_events
+WHERE event_id = 'TEST_CRASH_RECOVERY_001';
+
+
+-- 1. Check whether the test event was registered
+SELECT *
+FROM dbo.processed_events
+WHERE event_id = 'TEST_CRASH_RECOVERY_001';
+
+-- 2. Check aggregate totals
+SELECT
+    SUM(event_count) AS total_aggregated_events,
+    SUM(total_amount) AS total_aggregated_amount,
+    COUNT(*) AS aggregate_groups
+FROM dbo.minute_aggregates;
+
+-- 3. Check checkpoint
+SELECT source_name, last_offset
+FROM dbo.pipeline_checkpoints
+WHERE source_name = 'ecommerce_events';
+
+-- 4. Check source event still exists
+SELECT COUNT(*) AS source_event_count
+FROM dbo.events
+WHERE event_id = 'TEST_CRASH_RECOVERY_001';
+GO
+
+SELECT COUNT(*) AS source_event_count
+FROM dbo.events
+WHERE event_id = 'TEST_CRASH_RECOVERY_001';
+
+SELECT
+    (SELECT COUNT(*) FROM dbo.events) AS source_events,
+
+    (SELECT COUNT(*) FROM dbo.processed_events) AS ledger_events,
+
+    (SELECT SUM(event_count)
+     FROM dbo.minute_aggregates) AS aggregated_events,
+
+    (SELECT SUM(total_amount)
+     FROM dbo.minute_aggregates) AS aggregated_amount,
+
+    (SELECT last_offset
+     FROM dbo.pipeline_checkpoints
+     WHERE source_name = 'ecommerce_events') AS checkpoints;
+GO
+
+-- Inspect source events
+EXEC sp_help 'dbo.events';
+
+-- Inspect processing ledger
+EXEC sp_help 'dbo.processed_events';
+
+-- Inspect aggregate table
+EXEC sp_help 'dbo.minute_aggregates';
+GO
+
+SELECT
+    event_type,
+    COUNT(*) AS total_events,
+
+    SUM(CASE
+        WHEN amount IS NULL THEN 1
+        ELSE 0
+    END) AS null_amounts,
+
+    SUM(CASE
+        WHEN amount < 0 THEN 1
+        ELSE 0
+    END) AS negative_amounts,
+
+    SUM(CASE
+        WHEN amount = 0 THEN 1
+        ELSE 0
+    END) AS zero_amounts,
+
+    SUM(CASE
+        WHEN amount IS NOT NULL THEN 1
+        ELSE 0
+    END) AS populated_amounts
+
+FROM dbo.events
+GROUP BY event_type
+ORDER BY event_type;
+GO
+
+INSERT INTO dbo.events (
+    event_id,
+    event_type,
+    order_id,
+    customer_id,
+    amount,
+    event_time,
+    ingestion_time,
+    source_offset,
+    batch_id,
+    is_late
+)
+VALUES (
+    'TEST_INVALID_AMOUNT_001',
+    'order_created',
+    'TEST_ORDER_001',
+    'TEST_CUSTOMER_001',
+    -100.00,
+    GETDATE(),
+    GETDATE(),
+    1106,
+    'QUALITY_TEST',
+    0
+);
+
+SELECT
+    event_id,
+    event_type,
+    amount,
+    source_offset
+FROM dbo.events
+WHERE event_id = 'TEST_INVALID_AMOUNT_001';
+
+DELETE FROM dbo.events
+WHERE event_id = 'TEST_INVALID_AMOUNT_001';
+
+SELECT COUNT(*) AS remaining_test_records
+FROM dbo.events
+WHERE event_id = 'TEST_INVALID_AMOUNT_001';
+
+SELECT
+    TABLE_SCHEMA,
+    TABLE_NAME
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_TYPE = 'BASE TABLE'
+ORDER BY TABLE_NAME;
+
+SELECT
+    TABLE_NAME,
+    COLUMN_NAME,
+    DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME LIKE '%run%'
+   OR TABLE_NAME LIKE '%execution%'
+ORDER BY TABLE_NAME, ORDINAL_POSITION;
+
+SELECT
+    @@SERVERNAME AS server_name,
+    DB_NAME() AS current_database;
+GO
+
+SELECT
+    name,
+    state_desc
+FROM sys.databases
+WHERE name = 'RealtimeEcommerceDB';
+GO
+
+SELECT
+    TABLE_SCHEMA,
+    TABLE_NAME
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_TYPE = 'BASE TABLE'
+ORDER BY TABLE_NAME;
+GO
+
+EXEC sp_help 'dbo.pipeline_runs';
+
+SELECT TOP 10 *
+FROM dbo.pipeline_runs
+ORDER BY 1 DESC;
+GO
+
+ALTER TABLE dbo.pipeline_runs
+ADD
+    batches_processed INT NULL,
+    processing_events INT NULL,
+    duplicates_skipped INT NULL,
+    late_events_detected INT NULL,
+    final_checkpoint BIGINT NULL,
+    final_watermark DATETIME2(7) NULL,
+    processing_duration_seconds DECIMAL(12,4) NULL,
+    events_per_second DECIMAL(18,2) NULL,
+    ingestion_duration_seconds DECIMAL(12,4) NULL,
+    reconciliation_duration_seconds DECIMAL(12,4) NULL,
+    total_duration_seconds DECIMAL(12,4) NULL;
+
+EXEC sp_help 'dbo.pipeline_runs';
+
+SELECT
+    COUNT(*) AS total_events,
+    COUNT(DISTINCT event_id) AS unique_event_ids,
+    COUNT(DISTINCT source_offset) AS unique_source_offsets
+FROM dbo.events;
+
+SELECT
+    COUNT(*) AS total_quarantined_records
+FROM dbo.event_quarantine;
+
+SELECT
+    source_offset,
+    COUNT(*) AS duplicate_count
+FROM dbo.events
+GROUP BY source_offset
+HAVING COUNT(*) > 1;
