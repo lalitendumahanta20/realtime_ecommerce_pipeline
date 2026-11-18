@@ -1,227 +1,365 @@
-# Real-Time E-Commerce API & Data Engineering Pipeline
+# Real-Time E-Commerce Event Processing Pipeline
 
-A fresher-friendly, locally runnable portfolio project that demonstrates how an application sends e-commerce events through a REST API into SQL Server, then processes them in micro-batches to create event-time aggregates.
+A reliable, near-real-time e-commerce data pipeline built using **Python, Microsoft SQL Server, FastAPI, and Pytest**.
 
-## 1. What this project does
+The project simulates an e-commerce event stream and processes incoming events in micro-batches. It focuses on data reliability, transaction safety, duplicate prevention, late-arriving events, data quality, monitoring, and reconciliation.
+
+## Project Overview
+
+E-commerce platforms generate events such as order creation, payment completion, order cancellation, and shipment updates.
+
+This project demonstrates how to ingest, validate, process, store, and monitor these events while maintaining reliable processing state.
+
+The pipeline supports:
+
+- CSV-based event ingestion.
+- Data validation and rejected-record quarantine.
+- Micro-batch event processing.
+- Idempotent processing using an event ledger.
+- Source-offset checkpoint management.
+- Event-time watermarking and late-event detection.
+- Transaction commit and rollback.
+- Historical aggregate backfilling.
+- Source-to-aggregate reconciliation.
+- Pipeline execution history and performance metrics.
+- REST API endpoints using FastAPI.
+- Automated data-quality checks and monitoring.
+
+**Note:** This is a simulated near-real-time micro-batch pipeline, not a Kafka-based distributed streaming system.
+
+## Architecture
 
 ```text
-Client / Postman / Python producer
-             |
-             v
-     FastAPI REST endpoint
-   schema validation + API key
-             |
-             v
-      SQL Server: events
-   event_id deduplication
-             |
-             v
-    Existing batch processor
- offsets + watermark + late events
-             |
-             v
- minute_aggregates + checkpoints
-             |
-             v
-      reconciliation + logs
+          E-Commerce Event Data
+                    |
+                    v
+             CSV Event Source
+                    |
+                    v
+           Python Ingestion Layer
+                    |
+          Validation and Deduplication
+                    |
+          +---------+----------+
+          |                    |
+          v                    v
+     Valid Events         Rejected Events
+          |                    |
+          v                    v
+     SQL Server           Quarantine Table
+          |
+          v
+     Micro-Batch Processor
+          |
+     Event Ledger / Checkpoint
+          |
+     Watermark / Late Events
+          |
+          v
+     Minute-Level Aggregates
+          |
+          v
+      Reconciliation
+          |
+          v
+    Pipeline Run History
+          |
+          v
+    Monitoring and FastAPI
 ```
 
-The REST endpoint is an additional ingestion path. The existing CSV loader and micro-batch processor remain available. The API writes validated records into the same `dbo.events` table, so the existing processor can process API events on its next run.
+## Technology Stack
 
-## 2. Technology
+| Technology | Purpose |
+|---|---|
+| Python 3.11 | Pipeline implementation |
+| Microsoft SQL Server | Persistent storage |
+| SQL Server Management Studio | Database management |
+| PyODBC | Python-SQL Server connectivity |
+| FastAPI | REST API development |
+| Pydantic | Request validation |
+| Pandas | Data handling |
+| Pytest | Automated testing |
+| Python-dotenv | Environment configuration |
+| CSV | Sample event source |
 
-- Python 3.10+ (project was originally developed with Python 3.11)
-- FastAPI + Uvicorn for REST ingestion
-- Pydantic for request validation
-- Microsoft SQL Server + ODBC Driver 17/18
-- pyodbc for database access
-- pytest for automated tests
-- python-dotenv for configuration
+## Key Engineering Features
 
-## 3. Project layout
+### 1. Reliable Data Ingestion
+
+- Reads e-commerce events from CSV.
+- Validates required fields, event types, timestamps, amounts, and source offsets.
+- Prevents duplicate event ingestion.
+- Stores rejected records separately for investigation.
+
+### 2. Micro-Batch Processing
+
+- Processes events in configurable batches.
+- Maintains source offsets and checkpoints.
+- Calculates event-time watermarks.
+- Detects late-arriving events.
+- Creates minute-level aggregates.
+
+### 3. Idempotency and Exactly-Once Database Effects
+
+Uses a processed-event ledger to prevent an event from affecting database aggregates more than once.
+
+Duplicate events are skipped during replay, while processing checkpoints are maintained.
+
+The event ledger and aggregate updates are handled transactionally.
+
+### 4. Crash Recovery and Transaction Safety
+
+- Uses database transactions.
+- Commits successful batches.
+- Rolls back failed batches.
+- Supports retrying uncommitted events.
+- Prevents checkpoint advancement when a batch transaction fails.
+
+### 5. Data Quality Monitoring
+
+Implements four automated checks:
+
+- Missing events.
+- Duplicate events.
+- Invalid financial amounts.
+- Aggregate mismatches.
+
+The monitoring module generates JSON reports and appends them to a log file.
+
+A Windows Task Scheduler configuration was also tested for periodic execution.
+
+### 6. Pipeline Observability
+
+Stores execution details in SQL Server, including:
+
+- Run ID and execution status.
+- Records read, inserted, and rejected.
+- Batches processed.
+- Duplicate events skipped.
+- Late events detected.
+- Final checkpoint and watermark.
+- Processing duration and throughput.
+- Total pipeline execution time.
+- Error messages for failed runs.
+
+### 7. REST API
+
+FastAPI exposes endpoints for ingestion, health checks, data quality, and pipeline monitoring.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/health` | Application health |
+| GET | `/ready` | Readiness check |
+| POST | `/api/v1/events` | Event batch ingestion |
+| GET | `/quality/check` | Detailed quality report |
+| GET | `/quality/summary` | Quality summary |
+| GET | `/pipeline/runs` | Pipeline execution history |
+| GET | `/pipeline/summary` | Pipeline execution statistics |
+
+Interactive API documentation is available through `/docs` when the server is running.
+
+## Database Design
+
+The pipeline uses Microsoft SQL Server tables for event storage, processing state, aggregates, and monitoring.
+
+Important tables include:
+
+| Table | Purpose |
+|---|---|
+| `events` | Stores source events |
+| `processed_events` | Tracks processed event IDs |
+| `event_quarantine` | Stores rejected records |
+| `pipeline_checkpoints` | Maintains source offsets |
+| `pipeline_watermarks` | Maintains event-time watermarks |
+| `minute_aggregates` | Stores aggregated event metrics |
+| `pipeline_runs` | Stores execution history |
+
+## Project Structure
 
 ```text
 realtime_ecommerce_pipeline/
+│
 ├── api/
-│   ├── __init__.py
-│   ├── main.py              # REST endpoints: health, readiness, ingest
-│   └── schemas.py           # Pydantic request/response validation
-├── data/                    # Sample CSV events
-├── logs/                    # Runtime logs (created when needed)
-├── output/
+│   ├── main.py
+│   ├── schemas.py
+│   └── __init__.py
+│
+├── data/
+│   ├── sample_events.csv
+│   └── sample_events_backup.csv
+│
 ├── sql/
 │   └── RealtimeEcommerceDB.sql
+│
 ├── src/
-│   ├── db_connection.py     # Environment-based SQL connection
+│   ├── db_connection.py
 │   ├── generate_events.py
-│   ├── load_events.py       # CSV ingestion
-│   ├── process_batches.py   # Micro-batches, offsets, watermark, aggregates
+│   ├── load_events.py
+│   ├── process_batches.py
 │   ├── reconcile.py
 │   ├── backfill_aggregates.py
-│   └── run_history.py
+│   ├── run_history.py
+│   ├── data_quality.py
+│   └── monitor_quality.py
+│
 ├── tests/
-├── .env.example
+│   ├── conftest.py
+│   ├── test_api_schemas.py
+│   ├── test_backfill.py
+│   ├── test_load_events.py
+│   ├── test_process_batches.py
+│   ├── test_reconciliation.py
+│   └── test_transactions.py
+│
+├── main.py
 ├── config.py
-├── main.py                  # Runs CSV -> process -> reconcile workflow
-└── requirements.txt
+├── requirements.txt
+├── .env.example
+├── .gitignore
+└── README.md
 ```
 
-## 4. Local setup (Windows)
+## Installation and Setup
 
-### Step 1 — Install prerequisites
+### Prerequisites
 
-1. Install Python 3.10 or newer.
-2. Install Microsoft SQL Server (Developer or Express) and SQL Server Management Studio (SSMS).
-3. Install Microsoft ODBC Driver 17 or 18 for SQL Server.
-4. In SSMS, confirm that your SQL Server instance is running and that you can connect to it.
+- Python 3.11
+- Microsoft SQL Server
+- SQL Server ODBC Driver 17 or 18
+- Git
+- SQL Server Management Studio (recommended)
 
-### Step 2 — Open the project folder
+### 1. Clone the repository
 
-Extract the ZIP. Open the `realtime_ecommerce_pipeline` folder in VS Code. In the VS Code terminal:
+```bash
+git clone https://github.com/lalitendumahanta20/realtime_ecommerce_pipeline.git
+cd realtime_ecommerce_pipeline
+```
 
-```powershell
-python --version
+### 2. Create a virtual environment
+
+Windows:
+
+```bash
 python -m venv .venv
 .venv\Scripts\activate
-python -m pip install --upgrade pip
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Step 3 — Configure database connection
+### 4. Configure environment variables
 
-Copy `.env.example` to `.env` in the project root. Edit `DB_SERVER` to match your SQL Server instance:
+Create your local `.env` file using the example:
 
-- Default instance: `localhost` or `.`
-- SQL Express: `localhost\\SQLEXPRESS`
-- LocalDB: `(localdb)\\MSSQLLocalDB`
-- Remote server: `HOSTNAME` or `IP,PORT` (only if network access is configured)
-
-For Windows Authentication keep `DB_TRUSTED_CONNECTION=yes`. For SQL Authentication set it to `no` and provide `DB_USERNAME` and `DB_PASSWORD`. Never commit `.env` or real credentials.
-
-### Step 4 — Create database and tables
-
-1. Open `sql/RealtimeEcommerceDB.sql` in SSMS.
-2. Execute the database/table creation section at the top. If the database or tables already exist, do not rerun the `CREATE` statements blindly.
-3. Confirm these tables exist under `RealtimeEcommerceDB`: `events`, `event_quarantine`, `pipeline_checkpoints`, `pipeline_runs`, `minute_aggregates`, and `pipeline_watermarks`.
-
-### Step 5 — Test the database connection
-
-```powershell
-python src/db_connection.py
+```bash
+copy .env.example .env
 ```
 
-Do not continue until this prints a successful connection. If it fails, check the SQL Server service, instance name in `.env`, ODBC driver installation, authentication mode, and firewall/network access.
+Configure your SQL Server connection in `.env`.
 
-## 5. Start and test the REST API
+Example:
 
-Start from the project root with the virtual environment active:
+```env
+DB_SERVER=localhost
+DB_NAME=RealtimeEcommerceDB
+DB_DRIVER=
+DB_TRUSTED_CONNECTION=yes
+DB_USERNAME=
+DB_PASSWORD=
 
-```powershell
-uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+API_HOST=127.0.0.1
+API_PORT=8000
+API_KEY=
 ```
 
-Open these local URLs:
+Use your own database connection settings. Do not commit `.env` or actual credentials to GitHub.
 
-- API documentation (Swagger UI): http://127.0.0.1:8000/docs
-- Liveness: http://127.0.0.1:8000/health
-- Database readiness: http://127.0.0.1:8000/ready
+### 5. Initialize the database
 
-### Send a test event from PowerShell
-
-```powershell
-$body = @{
-  events = @(
-    @{
-      event_id = "api-event-0001"
-      event_type = "order_created"
-      order_id = "ORD-1001"
-      customer_id = "CUST-101"
-      amount = 1299.50
-      event_time = "2026-11-16T10:15:00"
-      source_offset = 900001
-      batch_id = "api-demo-001"
-    }
-  )
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/events" `
-  -Method Post -ContentType "application/json" -Body $body
-```
-
-Expected shape of response:
-
-```json
-{
-  "status": "accepted",
-  "received": 1,
-  "inserted": 1,
-  "duplicates": 0
-}
-```
-
-Send the same `event_id` again. It should be counted as a duplicate and not inserted twice. The API validates event types, required event ID, timestamps, positive source offsets, non-negative amounts, and rejects unknown request fields.
-
-### Optional API key
-
-Set a long random `API_KEY` value in `.env`, restart Uvicorn, and include this header on POST requests:
+Create the `RealtimeEcommerceDB` database in SQL Server and execute:
 
 ```text
-X-API-Key: your-secret-value
+sql/RealtimeEcommerceDB.sql
 ```
 
-Leave `API_KEY` blank for local development without authentication. Do not expose an unauthenticated development API publicly.
+Verify that the required tables are created successfully.
 
-## 6. Run the downstream pipeline
+### 6. Run the pipeline
 
-After posting API events, stop the API only if you want to; both services can run simultaneously. In a second terminal, from the project root:
-
-```powershell
-.venv\Scripts\activate
+```bash
 python main.py
 ```
 
-This existing workflow loads `data/sample_events.csv`, processes pending rows from SQL Server using micro-batches, updates checkpoints/watermarks, writes minute aggregates, and reconciles the output. Because the CSV loader runs as part of `main.py`, it will also load the sample CSV before processing API events.
+The pipeline executes ingestion, micro-batch processing, reconciliation, and execution-history recording.
 
-Useful SQL checks in SSMS:
+### 7. Run the API
 
-```sql
-USE RealtimeEcommerceDB;
-SELECT TOP 20 * FROM dbo.events ORDER BY ingestion_time DESC;
-SELECT * FROM dbo.pipeline_checkpoints;
-SELECT * FROM dbo.pipeline_watermarks;
-SELECT * FROM dbo.minute_aggregates ORDER BY window_start DESC;
-SELECT COUNT(*) AS total_events, COUNT(DISTINCT event_id) AS unique_events
-FROM dbo.events;
+```bash
+uvicorn api.main:app --reload
 ```
 
-## 7. Run tests
+Open:
 
-```powershell
-pytest tests/ -v
+```text
+http://127.0.0.1:8000/docs
 ```
 
-The original tests cover the existing loader, batch processing, transactions, backfill, and reconciliation logic. API contract/manual verification is available through `/docs`. A passing unit test suite does not prove a live SQL Server connection; run the connection check and end-to-end steps separately.
+### 8. Run data-quality monitoring
 
-## 8. Important design concepts to explain in an interview
+```bash
+python -m src.monitor_quality
+```
 
-- **API ingestion:** producers send JSON events over HTTP; FastAPI validates the request before writing to the database.
-- **Idempotency:** `event_id` is the business-level unique identifier. Retrying the same request should not create a second event. The database primary key remains the final uniqueness guard.
-- **Micro-batching:** the processor reads a bounded number of unprocessed events, aggregates them, and commits output and checkpoint updates transactionally.
-- **Checkpoint/offset:** remembers the last processed source offset so the next run can resume rather than starting from the beginning.
-- **Event time vs ingestion time:** event time says when the business event happened; ingestion time says when the pipeline received it.
-- **Watermark / late events:** a watermark tracks event-time progress while allowing a configured lateness window; older events are identified as late.
-- **Quarantine:** malformed CSV events are written to `event_quarantine` with the rejection reason rather than silently discarded.
-- **Reconciliation:** compares processed aggregates with source data to identify missing or inconsistent processing.
-- **Transactions:** commit successful batch work; rollback on failure to avoid partially persisted results.
+The monitoring report is appended to `logs/data_quality.log`.
 
-## 9. Current scope and production gaps
+### 9. Run automated tests
 
-This is a learning/portfolio implementation, not a production-ready distributed platform. The API currently inserts directly into SQL Server; it does not include Kafka, a managed queue, distributed workers, OAuth/JWT, rate limiting, schema registry, or cloud deployment. The current duplicate check plus SQL primary key protects event uniqueness, but concurrent duplicate requests can still race and return a database error; a production implementation should handle unique-key conflicts explicitly. Also review offset uniqueness and source partitioning before using multiple producers: the included processor assumes a single ordered source-offset stream.
+```bash
+pytest -q
+```
 
-Suggested next enhancements: asynchronous queue between API and database, structured JSON logs, retry/backoff for transient database errors, metrics dashboard, Docker-based app packaging, CI pipeline, and integration tests against a disposable SQL Server database.
+## Testing and Verification
 
-## 10. Resume / interview project summary
+The automated test suite covers:
 
-**Real-Time E-Commerce API & Event Processing Pipeline** — Built a FastAPI-based ingestion service that validates JSON e-commerce events and writes them idempotently to SQL Server. Integrated the API with a Python micro-batch processing workflow featuring source-offset checkpoints, event-time watermarks, late-event detection, minute-level aggregations, transactional processing, and source-to-aggregate reconciliation. Added environment-based configuration, health/readiness endpoints, API documentation, and automated tests.
+- API request validation.
+- Event ingestion and duplicate handling.
+- Micro-batch processing.
+- Checkpoint and watermark behavior.
+- Transaction commit and rollback.
+- Crash recovery behavior.
+- Historical backfilling.
+- Data reconciliation.
 
-Only claim measured throughput, event counts, or percentage improvements after rerunning the project and recording your own results.
+**Latest verified local test result: 51 passed, 1 warning.**
+
+The pipeline's failure-injection test verifies rollback before commit and successful retry afterward.
+
+## Reliability Design
+
+An important design decision is using a transactional event ledger alongside aggregate updates.
+
+This ensures that replaying an already processed event does not apply its database effects again.
+
+The project demonstrates exactly-once database effects within its transactional processing workflow. It does not claim exactly-once delivery across external systems.
+
+## Future Improvements
+
+- Integrate Apache Kafka for distributed event streaming.
+- Introduce Apache Spark for large-scale distributed processing.
+- Containerize the application using Docker.
+- Add CI/CD using GitHub Actions.
+- Build a monitoring dashboard.
+- Add automated alert delivery.
+- Deploy the pipeline to a cloud environment.
+
+## Author
+
+**Lalitendu Mahanta**
+
+GitHub: https://github.com/lalitendumahanta20
